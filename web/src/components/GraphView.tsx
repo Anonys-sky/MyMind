@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
+import ForceGraph2D from 'react-force-graph-2d';
 import type { Capture } from '../types';
 
 interface GraphViewProps {
@@ -10,7 +10,7 @@ interface GraphViewProps {
 }
 
 export const GraphView: React.FC<GraphViewProps> = ({ captures, links, onNodeClick, searchQuery }) => {
-  const fgRef = useRef<ForceGraphMethods>();
+  const fgRef = useRef<any>();
   const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [hoverNode, setHoverNode] = useState<Capture | null>(null);
 
