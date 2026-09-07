@@ -180,19 +180,19 @@ export class CaptureDatabase {
     return this.db.prepare('SELECT * FROM captures WHERE id = ?').get(id) as StoredCapture | undefined;
   }
 
-  getRecent(limit: number = 20, offset: number = 0): StoredCapture[] {
+  getRecent(limit: number = 50, offset: number = 0): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures
-      WHERE status = 'completed'
+      WHERE status != 'deleted'
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
     `).all(limit, offset) as StoredCapture[];
   }
 
-  getByCategory(category: string, limit: number = 20): StoredCapture[] {
+  getByCategory(category: string, limit: number = 50): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures
-      WHERE status = 'completed' AND category = ?
+      WHERE status != 'deleted' AND category = ?
       ORDER BY created_at DESC
       LIMIT ?
     `).all(category, limit) as StoredCapture[];

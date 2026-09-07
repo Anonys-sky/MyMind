@@ -57,46 +57,62 @@ export async function structureContent(
     ? `\n\nThe user also provided this caption with the content: "${caption}"`
     : '';
 
-  const response = await groq.chat.completions.create({
-    model: config.groq.textModel,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: `Content type: ${contentType}${contextNote}\n\nRaw content:\n${rawContent}`,
-      },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.3,
-    max_tokens: 2000,
-  });
-
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error('Empty response from Groq structurer');
-  }
-
-  let parsed: any;
   try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error(`Failed to parse structurer JSON: ${content.substring(0, 200)}`);
+    const response = await groq.chat.completions.create({
+      model: config.groq.textModel,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `Content type: ${contentType}${contextNote}\n\nRaw content:\n${rawContent}`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      max_tokens: 400,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('Empty response from Groq structurer');
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error(`Failed to parse structurer JSON: ${content.substring(0, 200)}`);
+    }
+
+    // Validate and normalize the response
+    const result: ProcessedCapture = {
+      title: typeof parsed.core_insight === 'string' && parsed.core_insight.trim().length > 0 
+        ? parsed.core_insight.trim() 
+        : rawContent.trim().split('\n')[0].substring(0, 80),
+      summary: '',
+      keyInsights: [],
+      tags: Array.isArray(parsed.tags) ? parsed.tags.filter(Boolean).map(String) : [],
+      category: VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'other',
+      actionItems: Array.isArray(parsed.actionable_directives) ? parsed.actionable_directives.filter(Boolean) : [],
+    };
+
+    console.log(
+      `[Structurer] ✅ "${result.title}" [${result.category}] ` +
+      `tags: [${result.tags.join(', ')}]`,
+    );
+
+    return result;
+  } catch (err: any) {
+    console.warn(`[Structurer] Warning: Groq call failed (${err.message}). Using resilient fallback.`);
+    // Fallback: don't let API failures drop the capture
+    const fallbackTitle = rawContent.trim().split('\n')[0].substring(0, 80) || 'Capture';
+    return {
+      title: fallbackTitle,
+      summary: '',
+      keyInsights: [],
+      tags: [contentType],
+      category: 'other',
+      actionItems: [],
+    };
   }
-
-  // Validate and normalize the response
-  const result: ProcessedCapture = {
-    title: typeof parsed.core_insight === 'string' ? parsed.core_insight : 'Untitled',
-    summary: '', // No longer summarizing
-    keyInsights: [], // No longer extracting
-    tags: Array.isArray(parsed.tags) ? parsed.tags.filter(Boolean).map(String) : [],
-    category: VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'other',
-    actionItems: Array.isArray(parsed.actionable_directives) ? parsed.actionable_directives.filter(Boolean) : [],
-  };
-
-  console.log(
-    `[Structurer] ✅ "${result.title}" [${result.category}] ` +
-    `tags: [${result.tags.join(', ')}]`,
-  );
-
-  return result;
 }

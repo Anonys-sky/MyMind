@@ -24,7 +24,7 @@ export const config = {
   },
   groq: {
     apiKey: requireEnv('GROQ_API_KEY'),
-    textModel: 'qwen/qwen3.8-27b',
+    textModel: 'openai/gpt-oss-120b',
     visionModel: 'qwen/qwen3.8-27b',
     whisperModel: 'whisper-large-v3-turbo',
   },

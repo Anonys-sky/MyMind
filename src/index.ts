@@ -68,7 +68,7 @@ async function main(): Promise<void> {
 
   // ── Step 7: Start Express API server ─────────────────────
   console.log('[Init] Starting Express API server...');
-  const apiServer = startApiServer(db, search);
+  const apiServer = startApiServer(db, search, pipeline);
 
   // Start with long polling (for local development)
   // For production deployment, switch to webhooks

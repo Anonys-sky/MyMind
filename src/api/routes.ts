@@ -4,13 +4,16 @@ import { CaptureDatabase } from '../storage/database.js';
 import { SearchEngine } from '../storage/search.js';
 import { generateEmbedding } from '../processing/embedder.js';
 
-export function setupRoutes(db: CaptureDatabase, search: SearchEngine): Router {
+import { ProcessingPipeline } from '../processing/index.js';
+import { RawCapture } from '../types.js';
+
+export function setupRoutes(db: CaptureDatabase, search: SearchEngine, pipeline?: ProcessingPipeline): Router {
   const router = Router();
 
   // 1. Get recent captures
   router.get('/captures', (req, res) => {
     try {
-      const limit = parseInt(req.query.limit as string) || 20;
+      const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
       const category = req.query.category as string;
 
@@ -47,13 +50,23 @@ export function setupRoutes(db: CaptureDatabase, search: SearchEngine): Router {
         return res.status(400).json({ success: false, error: 'Content is required' });
       }
 
-      const capture = {
+      const capture: RawCapture = {
         id: uuidv4(),
         rawContent: content,
         rawType: 'text' as const,
+        imagePath: null,
+        audioPath: null,
+        sourceUrl: null,
+        telegramMessageId: 0,
+        telegramChatId: 0,
+        telegramFileId: null,
+        caption: null,
       };
       
       db.insertRaw(capture);
+      if (pipeline) {
+        pipeline.enqueue(capture);
+      }
       
       res.json({ success: true, id: capture.id });
     } catch (error: any) {

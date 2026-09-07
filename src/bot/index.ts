@@ -238,6 +238,29 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
         return;
       }
 
+      // Handle text/code documents
+      const textExtensions = ['.txt', '.md', '.json', '.csv', '.js', '.ts', '.py', '.html', '.css', '.yaml', '.yml', '.xml', '.log'];
+      const ext = path.extname(doc.file_name || '').toLowerCase();
+      const isTextFile = mime.startsWith('text/') || mime === 'application/json' || textExtensions.includes(ext);
+
+      if (isTextFile && (doc.file_size || 0) < 1024 * 1024) { // < 1MB
+        const file = await ctx.getFile();
+        if (file.file_path) {
+          const url = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+          const res = await fetch(url);
+          if (res.ok) {
+            const fileText = await res.text();
+            capture.rawContent = fileText.substring(0, 20000); // cap at 20k chars
+            capture.rawType = 'text';
+            capture.caption = doc.file_name || null;
+            db.insertRaw(capture);
+            await ctx.reply('✅ 📎');
+            pipeline.enqueue(capture);
+            return;
+          }
+        }
+      }
+
       // For other documents, capture metadata
       capture.rawContent = [
         `Document: ${doc.file_name || 'Unknown'}`,

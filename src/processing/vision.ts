@@ -68,7 +68,7 @@ Combine everything into a single comprehensive text. Focus on capturing ALL usef
         ],
       },
     ],
-    max_tokens: 2000,
+    max_tokens: 600,
     temperature: 0.2,
   });
 
