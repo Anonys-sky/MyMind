@@ -145,6 +145,30 @@ export class SearchEngine {
     return results;
   }
 
+  /**
+   * Compute all pairwise similarities to generate links for a force-directed graph.
+   * Compares all embeddings in the cache and returns links above the threshold.
+   */
+  getGraphLinks(threshold: number = 0.85): { source: string; target: string; score: number }[] {
+    const links: { source: string; target: string; score: number }[] = [];
+    const entries = Array.from(this.embeddingCache.entries());
+    
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const [id1, vec1] = entries[i];
+        const [id2, vec2] = entries[j];
+        
+        const score = this.cosineSimilarity(vec1, vec2);
+        
+        if (score >= threshold) {
+          links.push({ source: id1, target: id2, score });
+        }
+      }
+    }
+    
+    return links;
+  }
+
   get cacheSize(): number {
     return this.embeddingCache.size;
   }

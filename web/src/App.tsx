@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Omnibar } from './components/Omnibar';
-import { Feed } from './components/Feed';
+import { GraphView } from './components/GraphView';
+import { InsightPanel } from './components/InsightPanel';
 import { Brain, Database, Activity, ServerCrash } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Capture, SearchResult, Stats } from './types';
@@ -13,20 +14,22 @@ const HEADERS = {
 
 function App() {
   const [captures, setCaptures] = useState<Capture[]>([]);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [links, setLinks] = useState<{ source: string; target: string; score: number }[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedNode, setSelectedNode] = useState<Capture | null>(null);
 
-  const fetchCaptures = async () => {
+  const fetchGraph = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/captures?limit=30`, { headers: HEADERS });
-      if (!res.ok) throw new Error('Failed to fetch captures');
+      const res = await fetch(`${API_BASE_URL}/api/graph`, { headers: HEADERS });
+      if (!res.ok) throw new Error('Failed to fetch graph data');
       const data = await res.json();
-      setCaptures(data.captures);
+      setCaptures(data.nodes);
+      setLinks(data.links);
     } catch (e: any) {
       console.error(e);
       setError('Could not connect to MyMind core API.');
@@ -47,7 +50,7 @@ function App() {
 
   const init = async () => {
     setIsLoading(true);
-    await Promise.all([fetchCaptures(), fetchStats()]);
+    await Promise.all([fetchGraph(), fetchStats()]);
     setIsLoading(false);
   };
 
@@ -61,41 +64,17 @@ function App() {
     setQuery(searchQuery);
     
     if (!searchQuery.trim()) {
-      setSearchResults([]);
       setIsSearching(false);
       return;
     }
 
+    // We don't fetch from backend anymore because GraphView filters locally and highlights!
     setIsSearching(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/search`, {
-        method: 'POST',
-        headers: HEADERS,
-        body: JSON.stringify({ query: searchQuery, limit: 15 })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSearchResults(data.results);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsSearching(false);
-    }
+    setTimeout(() => setIsSearching(false), 500); // Just for UI pulse effect
   }, []);
 
   const handleDelete = async (id: string) => {
-    try {
-      await fetch(`${API_BASE_URL}/api/captures/${id}`, {
-        method: 'DELETE',
-        headers: HEADERS
-      });
-      setCaptures(prev => prev.filter(c => c.id !== id));
-      setSearchResults(prev => prev.filter(r => r.capture.id !== id));
-      fetchStats();
-    } catch (e) {
-      console.error(e);
-    }
+    // Left empty for now, can be added inside InsightPanel later
   };
 
   if (error) {
@@ -137,8 +116,10 @@ function App() {
         </div>
       </header>
 
-      <main className="main-content">
-        <Omnibar onSearch={handleSearch} isSearching={isSearching} />
+      <main className="main-content" style={{ pointerEvents: 'none' }}>
+        <div style={{ pointerEvents: 'auto' }}>
+          <Omnibar onSearch={handleSearch} isSearching={isSearching} />
+        </div>
         
         <AnimatePresence mode="wait">
           {isLoading && captures.length === 0 ? (
@@ -161,18 +142,24 @@ function App() {
               key="feed"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
+              style={{ pointerEvents: 'auto' }}
             >
-              <Feed 
-                captures={captures} 
-                searchResults={searchResults} 
-                isSearching={query.length > 0} 
-                onDelete={handleDelete}
-                apiBaseUrl={API_BASE_URL}
+              <GraphView 
+                captures={captures}
+                links={links}
+                onNodeClick={(node) => setSelectedNode(node)}
+                searchQuery={query}
               />
             </motion.div>
           )}
         </AnimatePresence>
       </main>
+
+      <InsightPanel 
+        capture={selectedNode}
+        onClose={() => setSelectedNode(null)}
+        apiBaseUrl={API_BASE_URL}
+      />
     </div>
   );
 }

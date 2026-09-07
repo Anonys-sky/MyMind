@@ -67,6 +67,23 @@ export function setupRoutes(db: CaptureDatabase, search: SearchEngine): Router {
     }
   });
 
+  // 4b. Get Graph Data
+  router.get('/graph', (req, res) => {
+    try {
+      // Get all completed captures up to a limit (1000 nodes is plenty for WebGL)
+      const nodes = db.getRecent(1000, 0);
+      
+      // Calculate semantic links with a tight threshold to avoid hairballs
+      // We use 0.85 as a strong similarity baseline
+      const links = search.getGraphLinks(0.85);
+      
+      res.json({ success: true, nodes, links });
+    } catch (error: any) {
+      console.error('[API] /graph error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // 5. Delete capture (soft delete)
   router.delete('/captures/:id', (req, res) => {
     try {
