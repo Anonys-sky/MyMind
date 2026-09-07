@@ -13,6 +13,7 @@ import { SearchEngine } from './storage/search.js';
 import { ProcessingPipeline } from './processing/index.js';
 import { warmupEmbedder } from './processing/embedder.js';
 import { createBot } from './bot/index.js';
+import { startApiServer } from './api/server.js';
 import { config } from './config.js';
 
 async function main(): Promise<void> {
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   const shutdown = () => {
     console.log('\n[Shutdown] Closing gracefully...');
+    apiServer.close();
     bot.stop();
     db.close();
     console.log('[Shutdown] Done. Goodbye! 👋');
@@ -63,6 +65,10 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // ── Step 7: Start Express API server ─────────────────────
+  console.log('[Init] Starting Express API server...');
+  const apiServer = startApiServer(db, search);
 
   // Start with long polling (for local development)
   // For production deployment, switch to webhooks

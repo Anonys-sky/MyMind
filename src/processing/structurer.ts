@@ -16,48 +16,27 @@ const VALID_CATEGORIES: CaptureCategory[] = [
   'idea', 'reference', 'task', 'quote', 'link', 'learning', 'other',
 ];
 
-const SYSTEM_PROMPT = `You are an executive knowledge assistant. Your job is to process raw, unstructured input from a busy professional and transform it into a clean, structured knowledge entry.
-
-The input may be:
-- A rambling voice memo transcript (possibly with grammar errors, incomplete sentences, mixed languages including English and Malay)
-- Raw text typed hastily on a phone
-- OCR text extracted from a screenshot
-- A description of an image, design, or UI
-- Content from a forwarded message or link
-- A short one-line thought or idea
+const SYSTEM_PROMPT = `You are a ruthless, highly efficient executive assistant to a CEO. Your job is to process raw, unstructured input (voice transcripts, hasty texts, forwarded links) and extract ONLY the absolute core signal.
 
 Your task:
-1. **title**: A concise, descriptive title (max 10 words) that captures the essence
-2. **summary**: Clean up the content into clear, readable Markdown. Preserve ALL original meaning but make it well-structured. Add formatting (bullets, headers) where appropriate.
-3. **key_insights**: Extract 2-5 key insights or takeaways as concise bullet points
-4. **tags**: Generate 3-5 semantic tags (lowercase, hyphenated phrases like "backend-architecture", "leadership-advice", "css-trick", "event-planning")
-5. **category**: Classify into exactly ONE category:
-   - "idea" — a new concept, thought, or creative insight
-   - "reference" — technical info, documentation, how-to, tutorial content
-   - "task" — something that needs to be done, an action item
-   - "quote" — a memorable quote or advice from someone
-   - "link" — a URL or article reference
-   - "learning" — something learned at an event, from a person, or through experience
-   - "other" — doesn't fit the above categories
-6. **action_items**: Extract specific things the person needs to DO (empty array if none)
+1. **core_insight**: A single, punchy sentence that captures the exact technical or strategic essence of the input. Do not use fluff.
+2. **tags**: Generate 3-5 semantic tags (lowercase, hyphenated) for backend vector clustering ONLY.
+3. **category**: Classify into exactly ONE category:
+   - "idea", "reference", "task", "quote", "link", "learning", "other"
+4. **actionable_directives**: An array of specific, imperative tasks. NEVER repeat the core_insight. If the user input is a vague idea like "Build an AI agent", generate one highly specific, immediate technical next step (e.g., "Initialize Next.js repository" or "Define target use-case"). If there is no action, return [].
 
 Return ONLY valid JSON in this exact format:
 {
-  "title": "...",
-  "summary": "...",
-  "key_insights": ["...", "..."],
+  "core_insight": "...",
   "tags": ["...", "..."],
   "category": "idea|reference|task|quote|link|learning|other",
-  "action_items": ["...", "..."]
+  "actionable_directives": ["...", "..."]
 }
 
 Rules:
-- Preserve the original meaning and intent COMPLETELY — do NOT omit details
-- If the input mixes languages, keep the summary in the dominant language but tags always in English
-- Do NOT add information that wasn't in the original input
-- Even very short input (< 10 words) should get appropriate title, tags, and category
-- action_items should be [] if none are mentioned
-- The summary is a CLEANED version of the content, not a meta-description about it`;
+- NEVER summarize or repeat the original text. We already have it.
+- Action items MUST be imperative ("Do X", "Write Y") and highly specific.
+- Even very short input (< 5 words) gets processed.`;
 
 /**
  * Process raw content through the LLM to produce structured knowledge.
@@ -106,12 +85,12 @@ export async function structureContent(
 
   // Validate and normalize the response
   const result: ProcessedCapture = {
-    title: typeof parsed.title === 'string' ? parsed.title : 'Untitled',
-    summary: typeof parsed.summary === 'string' ? parsed.summary : rawContent,
-    keyInsights: Array.isArray(parsed.key_insights) ? parsed.key_insights.filter(Boolean) : [],
+    title: typeof parsed.core_insight === 'string' ? parsed.core_insight : 'Untitled',
+    summary: '', // No longer summarizing
+    keyInsights: [], // No longer extracting
     tags: Array.isArray(parsed.tags) ? parsed.tags.filter(Boolean).map(String) : [],
     category: VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'other',
-    actionItems: Array.isArray(parsed.action_items) ? parsed.action_items.filter(Boolean) : [],
+    actionItems: Array.isArray(parsed.actionable_directives) ? parsed.actionable_directives.filter(Boolean) : [],
   };
 
   console.log(
