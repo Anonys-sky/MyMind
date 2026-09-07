@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { CaptureDatabase } from '../storage/database.js';
 import { SearchEngine } from '../storage/search.js';
 import { generateEmbedding } from '../processing/embedder.js';
@@ -38,6 +39,28 @@ export function setupRoutes(db: CaptureDatabase, search: SearchEngine): Router {
     }
   });
 
+  // 2b. Dump new capture from web
+  router.post('/captures/dump', (req, res) => {
+    try {
+      const { content } = req.body;
+      if (!content) {
+        return res.status(400).json({ success: false, error: 'Content is required' });
+      }
+
+      const capture = {
+        id: uuidv4(),
+        rawContent: content,
+        rawType: 'text' as const,
+      };
+      
+      db.insertRaw(capture);
+      
+      res.json({ success: true, id: capture.id });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // 3. Search (Hybrid)
   router.post('/search', async (req, res) => {
     try {
@@ -63,23 +86,6 @@ export function setupRoutes(db: CaptureDatabase, search: SearchEngine): Router {
       const stats = db.getStats();
       res.json({ success: true, stats });
     } catch (error: any) {
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
-
-  // 4b. Get Graph Data
-  router.get('/graph', (req, res) => {
-    try {
-      // Get all completed captures up to a limit (1000 nodes is plenty for WebGL)
-      const nodes = db.getRecent(1000, 0);
-      
-      // Calculate semantic links with a tight threshold to avoid hairballs
-      // We use 0.85 as a strong similarity baseline
-      const links = search.getGraphLinks(0.85);
-      
-      res.json({ success: true, nodes, links });
-    } catch (error: any) {
-      console.error('[API] /graph error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
