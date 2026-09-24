@@ -28,6 +28,9 @@ export class ProcessingPipeline {
   private db: CaptureDatabase;
   private search: SearchEngine;
 
+  /** Optional callback fired when a capture is successfully processed */
+  public onProcessed?: (captureId: string, processed: ProcessedCapture) => Promise<void>;
+
   constructor(db: CaptureDatabase, search: SearchEngine) {
     this.db = db;
     this.search = search;
@@ -191,6 +194,15 @@ export class ProcessingPipeline {
       console.log(`[Pipeline] ✅ Done: "${processed.title}" [${processed.category}]`);
       if (processed.actionItems.length > 0) {
         console.log(`[Pipeline] 📋 Action items: ${processed.actionItems.join(', ')}`);
+      }
+
+      // Notify caller (bot) that processing is complete
+      if (this.onProcessed) {
+        try {
+          await this.onProcessed(capture.id, processed);
+        } catch (cbError: any) {
+          console.error(`[Pipeline] onProcessed callback failed:`, cbError);
+        }
       }
     } catch (error: any) {
       const errorMsg = error.message || String(error);

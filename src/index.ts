@@ -48,6 +48,27 @@ async function main(): Promise<void> {
   console.log('[Init] Starting Telegram bot...');
   const bot = createBot(db, pipeline, search);
 
+  // Notify user when a capture finishes processing (Phase 4 feedback loop)
+  pipeline.onProcessed = async (captureId, processed) => {
+    try {
+      const capture = db.getById(captureId);
+      if (capture && capture.telegram_chat_id) {
+        const shortId = captureId.substring(0, 8);
+        const tagsStr = processed.tags.map(t => `#${t.replace(/[^a-zA-Z0-9_]/g, '')}`).join(' ');
+        
+        // Match the PRD spec: "Bot sends back: 📂 Category: Learning · Tags: #react #tutorial"
+        const msg = `📂 Category: ${processed.category.charAt(0).toUpperCase() + processed.category.slice(1)} · Tags: ${tagsStr}\n_Reply with "/tag ${shortId} new_tag" to fix_`;
+        
+        await bot.api.sendMessage(capture.telegram_chat_id, msg, {
+          parse_mode: 'Markdown',
+          reply_to_message_id: capture.telegram_message_id || undefined,
+        });
+      }
+    } catch (err) {
+      console.error('[Bot] Failed to send processed notification:', err);
+    }
+  };
+
   // Global error handler — bot should never crash
   bot.catch((err) => {
     console.error('[Bot] Error:', err.message || err);
