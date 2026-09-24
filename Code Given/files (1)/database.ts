@@ -12,7 +12,6 @@ export class CaptureDatabase {
   private db: Database.Database;
 
   constructor() {
-    // Ensure data directories exist
     const dbDir = path.dirname(config.storage.dbPath);
     fs.mkdirSync(dbDir, { recursive: true });
     fs.mkdirSync(config.storage.imagesDir, { recursive: true });
@@ -20,7 +19,6 @@ export class CaptureDatabase {
 
     this.db = new Database(config.storage.dbPath);
 
-    // Performance optimizations
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
@@ -28,9 +26,6 @@ export class CaptureDatabase {
     this.initialize();
   }
 
-  /**
-   * Create tables and indices if they don't exist.
-   */
   private initialize(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS captures (
@@ -73,32 +68,11 @@ export class CaptureDatabase {
       CREATE INDEX IF NOT EXISTS idx_captures_type ON captures(raw_type);
     `);
 
-    // Phase 2: add new columns safely (ALTER TABLE IF NOT EXISTS)
-    // SQLite doesn't support IF NOT EXISTS for ALTER TABLE,
-    // so we check the schema first.
-    const columns = this.db.pragma('table_info(captures)') as { name: string }[];
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('ocr_text')) {
-      this.db.exec(`ALTER TABLE captures ADD COLUMN ocr_text TEXT`);
-    }
-    if (!columnNames.has('ai_notes')) {
-      this.db.exec(`ALTER TABLE captures ADD COLUMN ai_notes TEXT`);
-    }
-    if (!columnNames.has('image_hash')) {
-      this.db.exec(`ALTER TABLE captures ADD COLUMN image_hash TEXT`);
-      this.db.exec(`CREATE INDEX IF NOT EXISTS idx_captures_image_hash ON captures(image_hash)`);
-    }
-
     console.log(`[Database] Initialized at ${config.storage.dbPath}`);
   }
 
   // ─── Write Operations ───────────────────────────────────
 
-  /**
-   * Insert a raw capture immediately when the bot receives a message.
-   * Status is set to 'pending' — AI processing happens asynchronously.
-   */
   insertRaw(capture: RawCapture): void {
     this.db.prepare(`
       INSERT INTO captures (
@@ -120,6 +94,7 @@ export class CaptureDatabase {
     );
   }
 
+  // ── NEW ──────────────────────────────────────────────────
   /**
    * Attach the on-disk path to a capture after a deferred (background)
    * download completes. Needed because the row is now inserted BEFORE
@@ -132,10 +107,6 @@ export class CaptureDatabase {
     `).run(filePath, id);
   }
 
-  /**
-   * Update a capture with AI-processed content and embedding.
-   * Also inserts into the FTS5 index for keyword search.
-   */
   updateProcessed(id: string, processed: ProcessedCapture, embedding: number[] | null): void {
     const updateCapture = this.db.prepare(`
       UPDATE captures SET
@@ -154,7 +125,6 @@ export class CaptureDatabase {
 
     const getRawContent = this.db.prepare(`SELECT raw_content FROM captures WHERE id = ?`);
 
-    // Run both in a transaction for consistency
     const transaction = this.db.transaction(() => {
       updateCapture.run(
         processed.title,
@@ -182,41 +152,13 @@ export class CaptureDatabase {
     transaction();
   }
 
-  /**
-   * Update raw_content (e.g., after audio transcription fills in the text).
-   */
   updateRawContent(id: string, rawContent: string): void {
     this.db.prepare(`
       UPDATE captures SET raw_content = ?, updated_at = datetime('now') WHERE id = ?
     `).run(rawContent, id);
   }
 
-  /**
-   * Phase 2: Store separate OCR text, AI notes, and image hash.
-   * This replaces the old pattern of blending Vision output into raw_content.
-   * Passing null for any field preserves the existing value (via COALESCE).
-   */
-  updateImageMeta(id: string, ocrText: string | null, aiNotes: string | null, imageHash: string | null): void {
-    this.db.prepare(`
-      UPDATE captures SET
-        ocr_text = COALESCE(?, ocr_text),
-        ai_notes = COALESCE(?, ai_notes),
-        image_hash = COALESCE(?, image_hash),
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(ocrText, aiNotes, imageHash, id);
-  }
-
-  /**
-   * Phase 2: Check for a duplicate image by content hash.
-   * Returns the existing capture if a match is found.
-   */
-  getByImageHash(hash: string): StoredCapture | undefined {
-    return this.db.prepare(`
-      SELECT * FROM captures WHERE image_hash = ? AND status != 'deleted' LIMIT 1
-    `).get(hash) as StoredCapture | undefined;
-  }
-
+  // ── NEW ──────────────────────────────────────────────────
   /**
    * Overwrite a capture's tags — the one-tap correction path behind /tag.
    * Also refreshes the FTS5 row so keyword search reflects the correction
@@ -254,6 +196,7 @@ export class CaptureDatabase {
     return this.db.prepare('SELECT * FROM captures WHERE id = ?').get(id) as StoredCapture | undefined;
   }
 
+  // ── NEW ──────────────────────────────────────────────────
   /**
    * Look up a capture by the short (first 8 chars) id shown in /recent
    * and /search results — this is what makes /tag <id> usable without
@@ -283,10 +226,6 @@ export class CaptureDatabase {
     `).all(category, limit) as StoredCapture[];
   }
 
-  /**
-   * Full-text keyword search using SQLite FTS5.
-   * Returns matching capture IDs ranked by relevance.
-   */
   searchKeyword(query: string, limit: number = 20): { capture_id: string; rank: number }[] {
     try {
       return this.db.prepare(`
@@ -297,16 +236,10 @@ export class CaptureDatabase {
         LIMIT ?
       `).all(query, limit) as { capture_id: string; rank: number }[];
     } catch {
-      // FTS5 query syntax can fail with special characters
-      // Fall back to a simple LIKE search
       return [];
     }
   }
 
-  /**
-   * Load all embeddings into memory for semantic search.
-   * For <10K items, this is fast and uses ~15MB of RAM.
-   */
   getAllEmbeddings(): { id: string; embedding: number[] }[] {
     const rows = this.db.prepare(`
       SELECT id, embedding FROM captures
@@ -319,9 +252,6 @@ export class CaptureDatabase {
     }));
   }
 
-  /**
-   * Get captures that haven't been successfully processed yet.
-   */
   getPending(): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures
@@ -330,9 +260,6 @@ export class CaptureDatabase {
     `).all() as StoredCapture[];
   }
 
-  /**
-   * Get aggregate statistics about your knowledge base.
-   */
   getStats(): {
     total: number;
     pending: number;
@@ -381,9 +308,6 @@ export class CaptureDatabase {
     };
   }
 
-  /**
-   * Get captures from the last N days for weekly digest.
-   */
   getDigest(days: number = 7): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures

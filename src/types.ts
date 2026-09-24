@@ -61,6 +61,9 @@ export interface StoredCapture {
   audio_path: string | null;
   source_url: string | null;
   caption: string | null;
+  ocr_text: string | null; // Phase 2: literal OCR transcription from images
+  ai_notes: string | null; // Phase 2: AI interpretive description (separate from OCR)
+  image_hash: string | null; // Phase 2: SHA-256 content hash for dedup
   telegram_message_id: number;
   telegram_chat_id: number;
   telegram_file_id: string | null;

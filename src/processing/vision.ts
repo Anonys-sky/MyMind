@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════
-// Image Analysis — Groq Vision (Llama 3.2 Vision)
+// Image Analysis — Groq Vision (Llama 4 Scout)
 // ═══════════════════════════════════════════════════════════
 //
-// Analyzes screenshots, photos, and documents using Groq's
-// Vision LLM. Extracts OCR text, describes visual content,
-// and captures technical details from code/UI screenshots.
+// Phase 2 rewrite: Returns structured output with OCR text and
+// AI interpretation as SEPARATE fields, never blended into one
+// searchable blob. This eliminates the hallucination-adjacent
+// risk where Vision model interpretations were stored as if they
+// were literal text transcriptions.
 
 import Groq from 'groq-sdk';
 import { config } from '../config.js';
@@ -24,14 +26,25 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
+ * Structured output from vision analysis.
+ * OCR text and AI interpretation are kept separate so they can
+ * be stored in distinct database columns and searched independently.
+ */
+export interface VisionResult {
+  /** Literal text transcription from the image (OCR). Verbatim, no interpretation. */
+  ocrText: string;
+  /** AI's interpretive description of visual content, context, and key takeaways. */
+  aiNotes: string;
+}
+
+/**
  * Analyze an image using Groq's Vision model.
- * Extracts text (OCR), describes visual content, and captures
- * technical details from screenshots and documents.
+ * Returns structured output with OCR and AI notes separated.
  *
  * @param imagePath - Path to the image file
- * @returns Comprehensive text description of the image
+ * @returns Structured vision result with separate OCR and AI fields
  */
-export async function analyzeImage(imagePath: string): Promise<string> {
+export async function analyzeImage(imagePath: string): Promise<VisionResult> {
   console.log(`[Vision] Analyzing: ${imagePath}`);
 
   const imageBuffer = fs.readFileSync(imagePath);
@@ -47,17 +60,17 @@ export async function analyzeImage(imagePath: string): Promise<string> {
         content: [
           {
             type: 'text',
-            text: `You are a knowledge extraction assistant. Analyze this image thoroughly and provide:
+            text: `Analyze this image and respond in EXACTLY this JSON format:
 
-1. **Text Content (OCR)**: Transcribe ALL text visible in the image exactly as written. Include code, labels, headings, captions, error messages — everything.
+{
+  "ocr_text": "ALL text visible in the image, transcribed exactly as written — every word, label, heading, code snippet, error message, URL, caption. If no text is visible, use an empty string.",
+  "ai_notes": "Your interpretation: what the image shows (screenshot, photo, diagram, etc.), technical context if any, and the most important takeaways someone would want to remember."
+}
 
-2. **Visual Description**: Describe what the image shows — is it a screenshot, photo, diagram, whiteboard, social media post, etc.?
-
-3. **Technical Content**: If the image contains code, UI elements, architecture diagrams, terminal output, or documentation, describe the technical concepts in detail.
-
-4. **Key Information**: What are the most important takeaways someone would want to remember from this image?
-
-Combine everything into a single comprehensive text. Focus on capturing ALL useful information for future retrieval.`,
+CRITICAL RULES:
+- ocr_text must be VERBATIM transcription only. Do not add, interpret, or rephrase any text.
+- ai_notes is for YOUR interpretation and context — describe, don't transcribe.
+- Return ONLY valid JSON, nothing else.`,
           },
           {
             type: 'image_url',
@@ -68,11 +81,31 @@ Combine everything into a single comprehensive text. Focus on capturing ALL usef
         ],
       },
     ],
-    max_tokens: 600,
-    temperature: 0.2,
+    max_tokens: 800,
+    temperature: 0.1,
+    response_format: { type: 'json_object' },
   });
 
-  const description = response.choices[0]?.message?.content || 'Unable to analyze image';
-  console.log(`[Vision] Done (${description.length} chars)`);
-  return description;
+  const content = response.choices[0]?.message?.content || '';
+  console.log(`[Vision] Raw response (${content.length} chars)`);
+
+  try {
+    const parsed = JSON.parse(content);
+    const result: VisionResult = {
+      ocrText: typeof parsed.ocr_text === 'string' ? parsed.ocr_text.trim() : '',
+      aiNotes: typeof parsed.ai_notes === 'string' ? parsed.ai_notes.trim() : content.trim(),
+    };
+
+    console.log(
+      `[Vision] ✅ OCR: ${result.ocrText.length} chars | Notes: ${result.aiNotes.length} chars`,
+    );
+    return result;
+  } catch {
+    // If JSON parsing fails, treat entire output as ai_notes (safe fallback)
+    console.warn('[Vision] Failed to parse structured response, using fallback');
+    return {
+      ocrText: '',
+      aiNotes: content.trim() || 'Unable to analyze image',
+    };
+  }
 }

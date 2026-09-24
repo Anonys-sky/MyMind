@@ -17,6 +17,7 @@
     "express": "^4.22.2",
     "grammy": "^1.31.0",
     "groq-sdk": "^0.9.0",
+    "sharp": "^0.35.4",
     "uuid": "^11.0.0"
   },
   "devDependencies": {
