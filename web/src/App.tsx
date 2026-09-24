@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Omnibar } from './components/Omnibar';
-import { TerminalStream } from './components/TerminalStream';
+import { MasonryFeed } from './components/MasonryFeed';
 import { Brain, Database, Activity, ServerCrash } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Capture, SearchResult, Stats } from './types';
@@ -188,7 +188,7 @@ function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
             >
-              <TerminalStream 
+              <MasonryFeed 
                 captures={displayCaptures}
                 onDelete={handleDelete}
                 apiBaseUrl={API_BASE_URL}

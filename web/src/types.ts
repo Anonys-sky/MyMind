@@ -1,7 +1,7 @@
 export interface Capture {
   id: string;
   raw_content: string | null;
-  raw_type: 'text' | 'image' | 'audio' | 'document';
+  raw_type: 'text' | 'image' | 'photo' | 'audio' | 'voice' | 'document' | 'link';
   title: string | null;
   summary: string | null;
   key_insights: string | null; // JSON string in DB, but let's parse it
