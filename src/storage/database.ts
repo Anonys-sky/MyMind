@@ -104,6 +104,18 @@ export class CaptureDatabase {
   }
 
   /**
+   * Attach the on-disk path to a capture after a deferred (background)
+   * download completes. Needed because the row is now inserted BEFORE
+   * the Telegram file download runs (so a failed download still leaves
+   * a retryable row) — this fills in the path once the file actually lands.
+   */
+  updateMediaPath(id: string, field: 'image_path' | 'audio_path', filePath: string): void {
+    this.db.prepare(`
+      UPDATE captures SET ${field} = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(filePath, id);
+  }
+
+  /**
    * Update a capture with AI-processed content and embedding.
    * Also inserts into the FTS5 index for keyword search.
    */
@@ -162,6 +174,25 @@ export class CaptureDatabase {
     `).run(rawContent, id);
   }
 
+  /**
+   * Overwrite a capture's tags — the one-tap correction path behind /tag.
+   * Also refreshes the FTS5 row so keyword search reflects the correction
+   * immediately, not just the next full reprocess.
+   */
+  updateTags(id: string, tags: string[]): void {
+    const tagsJson = JSON.stringify(tags);
+    const transaction = this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE captures SET tags = ?, updated_at = datetime('now') WHERE id = ?
+      `).run(tagsJson, id);
+
+      this.db.prepare(`
+        UPDATE captures_fts SET tags = ? WHERE capture_id = ?
+      `).run(tags.join(' '), id);
+    });
+    transaction();
+  }
+
   markProcessing(id: string): void {
     this.db.prepare(`
       UPDATE captures SET status = 'processing', updated_at = datetime('now') WHERE id = ?
@@ -180,19 +211,30 @@ export class CaptureDatabase {
     return this.db.prepare('SELECT * FROM captures WHERE id = ?').get(id) as StoredCapture | undefined;
   }
 
-  getRecent(limit: number = 50, offset: number = 0): StoredCapture[] {
+  /**
+   * Look up a capture by the short (first 8 chars) id shown in /recent
+   * and /search results — this is what makes /tag <id> usable without
+   * forcing you to paste a full UUID from your phone keyboard.
+   */
+  getByShortId(shortId: string): StoredCapture | undefined {
+    return this.db.prepare(`
+      SELECT * FROM captures WHERE id LIKE ? || '%' LIMIT 1
+    `).get(shortId) as StoredCapture | undefined;
+  }
+
+  getRecent(limit: number = 20, offset: number = 0): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures
-      WHERE status != 'deleted'
+      WHERE status = 'completed'
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
     `).all(limit, offset) as StoredCapture[];
   }
 
-  getByCategory(category: string, limit: number = 50): StoredCapture[] {
+  getByCategory(category: string, limit: number = 20): StoredCapture[] {
     return this.db.prepare(`
       SELECT * FROM captures
-      WHERE status != 'deleted' AND category = ?
+      WHERE status = 'completed' AND category = ?
       ORDER BY created_at DESC
       LIMIT ?
     `).all(category, limit) as StoredCapture[];

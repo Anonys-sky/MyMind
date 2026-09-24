@@ -46,7 +46,7 @@ async function main(): Promise<void> {
 
   // ── Step 6: Start Telegram bot ───────────────────────────
   console.log('[Init] Starting Telegram bot...');
-  const bot = createBot(db, pipeline);
+  const bot = createBot(db, pipeline, search);
 
   // Global error handler — bot should never crash
   bot.catch((err) => {

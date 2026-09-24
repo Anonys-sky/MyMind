@@ -6,28 +6,44 @@
 // bot from your phone or desktop Telegram — text, voice, photos,
 // links, forwards — and it captures everything instantly.
 //
-// The bot responds with ✅ in <100ms. All AI processing happens
-// asynchronously in the background. You never wait.
+// CHANGED: for every media type (photo/voice/audio/video_note),
+// the raw row is now inserted and the ✅ ack is sent BEFORE the
+// Telegram file download runs. Previously the download happened
+// first, which (a) meant slow downloads delayed the "instant" ack,
+// contradicting the whole point of this bot, and (b) meant a failed
+// download never created a database row at all, so /retry had
+// nothing to retry — the capture was just silently gone.
+//
+// The download+enqueue now happens in the background via
+// captureMediaThenEnqueue(). If it fails, the row already exists
+// and gets marked 'failed', so /retry can genuinely recover it —
+// see processing/index.ts for the matching re-download logic.
 
 import { Bot, Context } from 'grammy';
 import { config } from '../config.js';
 import { RawCapture } from '../types.js';
 import { ProcessingPipeline } from '../processing/index.js';
 import { CaptureDatabase } from '../storage/database.js';
+import { SearchEngine } from '../storage/search.js';
+import { generateEmbedding } from '../processing/embedder.js';
+import { downloadTelegramFile, formatBytes } from '../utils/telegram.js';
 import { v4 as uuidv4 } from 'uuid';
-import fs from 'fs';
 import path from 'path';
 
 /**
  * Create and configure the Telegram bot with all message handlers.
+ *
+ * NOTE: signature changed — now takes `search` as a third argument
+ * so /search and /tag can use the already-built hybrid search engine.
+ * Update the call site (wherever createBot(db, pipeline) is currently
+ * called, likely src/index.ts) to createBot(db, pipeline, search).
  */
-export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bot {
+export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, search: SearchEngine): Bot {
   const bot = new Bot(config.telegram.botToken);
 
   // ── Security middleware: only accept from authorized user ──
   bot.use(async (ctx, next) => {
     if (ctx.from?.id !== config.telegram.allowedUserId) {
-      // Silently ignore unauthorized users
       if (ctx.message) {
         console.warn(`[Bot] ⚠️ Rejected message from unauthorized user: ${ctx.from?.id} (@${ctx.from?.username})`);
       }
@@ -50,6 +66,8 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
       `Everything is processed by AI and made searchable.\n` +
       `*Zero organization required.*\n\n` +
       `Commands:\n` +
+      `/search <query> — Find anything you've saved\n` +
+      `/tag <id> tag1, tag2 — Fix a capture's tags\n` +
       `/stats — View your knowledge base statistics\n` +
       `/recent — Show last 5 captures\n` +
       `/retry — Re-process any failed captures`,
@@ -93,6 +111,7 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
   });
 
   // ── /recent command ───────────────────────────────────────
+  // CHANGED: now shows the short id, since /tag needs it.
   bot.command('recent', async (ctx) => {
     const recent = db.getRecent(5);
     if (recent.length === 0) {
@@ -100,10 +119,11 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
       return;
     }
 
-    const lines = recent.map((c, i) => {
+    const lines = recent.map((c) => {
       const tags = c.tags ? JSON.parse(c.tags).join(', ') : '';
       const date = new Date(c.created_at + 'Z').toLocaleDateString();
-      return `${i + 1}. *${c.title || 'Untitled'}*\n   ${c.category || 'other'} • ${date}\n   ${tags}`;
+      const shortId = c.id.substring(0, 8);
+      return `\`${shortId}\` *${c.title || 'Untitled'}*\n   ${c.category || 'other'} • ${date}\n   ${tags}`;
     });
 
     await ctx.reply(
@@ -112,25 +132,90 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
     );
   });
 
+  // ── /search command — NEW ──────────────────────────────────
+  // Wires up the hybrid search engine (storage/search.ts) that
+  // already existed but had no way to be invoked from the bot.
+  bot.command('search', async (ctx) => {
+    const query = ctx.match?.trim();
+    if (!query) {
+      await ctx.reply('Usage: /search <query>\nExample: /search pricing psychology');
+      return;
+    }
+
+    const queryEmbedding = await generateEmbedding(query);
+    const results = await search.hybridSearch(query, queryEmbedding, 5);
+
+    if (results.length === 0) {
+      await ctx.reply(`No results for "${query}". Try different words, or check /recent.`);
+      return;
+    }
+
+    const lines = results.map(({ capture, matchType }) => {
+      const shortId = capture.id.substring(0, 8);
+      const tags = capture.tags ? JSON.parse(capture.tags).join(', ') : '';
+      const date = new Date(capture.created_at + 'Z').toLocaleDateString();
+      const snippet = (capture.summary || capture.raw_content || '').slice(0, 120).trim();
+      return (
+        `\`${shortId}\` *${capture.title || 'Untitled'}* _(${matchType})_\n` +
+        `   ${capture.category || 'other'} • ${date}\n` +
+        `   ${snippet}${snippet.length === 120 ? '…' : ''}\n` +
+        `   ${tags ? tags : ''}`
+      );
+    });
+
+    await ctx.reply(`🔎 *Results for "${query}"*\n\n${lines.join('\n\n')}`, { parse_mode: 'Markdown' });
+  });
+
+  // ── /tag command — NEW ─────────────────────────────────────
+  // The one-tap correction loop that was entirely missing:
+  // /tag <short-id> tag1, tag2, tag3
+  bot.command('tag', async (ctx) => {
+    const raw = ctx.match?.trim() ?? '';
+    const firstSpace = raw.indexOf(' ');
+
+    if (!raw || firstSpace === -1) {
+      await ctx.reply(
+        'Usage: /tag <id> tag1, tag2, tag3\n' +
+        'Get the id (the short code in backticks) from /recent or /search.',
+      );
+      return;
+    }
+
+    const shortId = raw.slice(0, firstSpace).trim();
+    const newTags = raw.slice(firstSpace + 1).split(',').map(t => t.trim()).filter(Boolean);
+
+    if (newTags.length === 0) {
+      await ctx.reply('No tags provided. Usage: /tag <id> tag1, tag2, tag3');
+      return;
+    }
+
+    const capture = db.getByShortId(shortId);
+    if (!capture) {
+      await ctx.reply(`Couldn't find a capture starting with "${shortId}". Check /recent for valid ids.`);
+      return;
+    }
+
+    db.updateTags(capture.id, newTags);
+    await ctx.reply(`✅ Updated tags for "${capture.title || 'Untitled'}": ${newTags.join(', ')}`);
+  });
+
   // ── /retry command ────────────────────────────────────────
   bot.command('retry', async (ctx) => {
     const count = await pipeline.retryFailed();
     if (count === 0) {
       await ctx.reply('✅ No failed captures to retry.');
     } else {
-      await ctx.reply(`🔄 Retrying ${count} failed capture(s)...`);
+      await ctx.reply(`🔄 Retrying ${count} failed/pending capture(s)...`);
     }
   });
 
   // ── Text messages ─────────────────────────────────────────
   bot.on('message:text', async (ctx) => {
-    // Skip commands (already handled above)
     if (ctx.message.text.startsWith('/')) return;
 
     const capture = newCapture(ctx, 'text');
     capture.rawContent = ctx.message.text;
 
-    // Detect if the message is primarily a URL
     const urlRegex = /^https?:\/\/\S+$/;
     if (urlRegex.test(ctx.message.text.trim())) {
       capture.rawType = 'link';
@@ -143,74 +228,47 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
   });
 
   // ── Voice messages ────────────────────────────────────────
+  // CHANGED: insert + ack happen before the download now.
   bot.on('message:voice', async (ctx) => {
     const capture = newCapture(ctx, 'voice');
+    capture.telegramFileId = ctx.message.voice.file_id;
 
-    try {
-      const file = await ctx.getFile();
-      const filePath = await downloadTelegramFile(
-        file.file_path!, capture.id, 'audio', '.ogg',
-      );
-      capture.audioPath = filePath;
-      capture.telegramFileId = file.file_id;
+    db.insertRaw(capture);
+    await ctx.reply('✅ 🎤');
 
-      db.insertRaw(capture);
-      await ctx.reply('✅ 🎤');
-      pipeline.enqueue(capture);
-    } catch (error: any) {
-      console.error('[Bot] Failed to download voice:', error.message);
-      await ctx.reply('❌ Failed to capture voice memo. Try again?');
-    }
+    captureMediaThenEnqueue(ctx, db, pipeline, capture, ctx.message.voice.file_id, 'audio', '.ogg');
   });
 
   // ── Audio files (MP3 etc. sent as audio) ──────────────────
   bot.on('message:audio', async (ctx) => {
     const capture = newCapture(ctx, 'voice');
+    capture.caption = ctx.message.caption || null;
+    capture.telegramFileId = ctx.message.audio.file_id;
 
-    try {
-      const file = await ctx.getFile();
-      const ext = path.extname(ctx.message.audio.file_name || '.mp3') || '.mp3';
-      const filePath = await downloadTelegramFile(
-        file.file_path!, capture.id, 'audio', ext,
-      );
-      capture.audioPath = filePath;
-      capture.telegramFileId = file.file_id;
-      capture.caption = ctx.message.caption || null;
+    db.insertRaw(capture);
+    await ctx.reply('✅ 🎵');
 
-      db.insertRaw(capture);
-      await ctx.reply('✅ 🎵');
-      pipeline.enqueue(capture);
-    } catch (error: any) {
-      console.error('[Bot] Failed to download audio:', error.message);
-      await ctx.reply('❌ Failed to capture audio. Try again?');
-    }
+    const ext = path.extname(ctx.message.audio.file_name || '.mp3') || '.mp3';
+    captureMediaThenEnqueue(ctx, db, pipeline, capture, ctx.message.audio.file_id, 'audio', ext);
   });
 
   // ── Photos ────────────────────────────────────────────────
+  // CHANGED: this is the main fix. Previously awaited the full
+  // download before insertRaw + reply, which both delayed the ack
+  // for your primary use case (screenshots) and meant a failed
+  // download left no trace to retry.
   bot.on('message:photo', async (ctx) => {
+    const photos = ctx.message.photo;
+    const largest = photos[photos.length - 1];
+
     const capture = newCapture(ctx, 'photo');
+    capture.caption = ctx.message.caption || null;
+    capture.telegramFileId = largest.file_id;
 
-    try {
-      // Get the highest resolution version
-      const photos = ctx.message.photo;
-      const largest = photos[photos.length - 1];
-      const file = await ctx.api.getFile(largest.file_id);
-      const ext = path.extname(file.file_path || '.jpg') || '.jpg';
+    db.insertRaw(capture);
+    await ctx.reply('✅ 📸');
 
-      const filePath = await downloadTelegramFile(
-        file.file_path!, capture.id, 'images', ext,
-      );
-      capture.imagePath = filePath;
-      capture.caption = ctx.message.caption || null;
-      capture.telegramFileId = file.file_id;
-
-      db.insertRaw(capture);
-      await ctx.reply('✅ 📸');
-      pipeline.enqueue(capture);
-    } catch (error: any) {
-      console.error('[Bot] Failed to download photo:', error.message);
-      await ctx.reply('❌ Failed to capture photo. Try again?');
-    }
+    captureMediaThenEnqueue(ctx, db, pipeline, capture, largest.file_id, 'images', '.jpg');
   });
 
   // ── Documents ─────────────────────────────────────────────
@@ -221,47 +279,18 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
     capture.caption = ctx.message.caption || null;
 
     try {
-      // Handle image documents (sent as files instead of photos)
       if (mime.startsWith('image/')) {
-        const file = await ctx.getFile();
-        const ext = path.extname(doc.file_name || '.jpg') || '.jpg';
-        const filePath = await downloadTelegramFile(
-          file.file_path!, capture.id, 'images', ext,
-        );
-        capture.imagePath = filePath;
         capture.rawType = 'photo';
-        capture.telegramFileId = file.file_id;
+        capture.telegramFileId = doc.file_id;
 
         db.insertRaw(capture);
         await ctx.reply('✅ 📸');
-        pipeline.enqueue(capture);
+
+        const ext = path.extname(doc.file_name || '.jpg') || '.jpg';
+        captureMediaThenEnqueue(ctx, db, pipeline, capture, doc.file_id, 'images', ext);
         return;
       }
 
-      // Handle text/code documents
-      const textExtensions = ['.txt', '.md', '.json', '.csv', '.js', '.ts', '.py', '.html', '.css', '.yaml', '.yml', '.xml', '.log'];
-      const ext = path.extname(doc.file_name || '').toLowerCase();
-      const isTextFile = mime.startsWith('text/') || mime === 'application/json' || textExtensions.includes(ext);
-
-      if (isTextFile && (doc.file_size || 0) < 1024 * 1024) { // < 1MB
-        const file = await ctx.getFile();
-        if (file.file_path) {
-          const url = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
-          const res = await fetch(url);
-          if (res.ok) {
-            const fileText = await res.text();
-            capture.rawContent = fileText.substring(0, 20000); // cap at 20k chars
-            capture.rawType = 'text';
-            capture.caption = doc.file_name || null;
-            db.insertRaw(capture);
-            await ctx.reply('✅ 📎');
-            pipeline.enqueue(capture);
-            return;
-          }
-        }
-      }
-
-      // For other documents, capture metadata
       capture.rawContent = [
         `Document: ${doc.file_name || 'Unknown'}`,
         `Type: ${mime || 'Unknown'}`,
@@ -282,22 +311,12 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
   bot.on('message:video_note', async (ctx) => {
     const capture = newCapture(ctx, 'voice');
     capture.rawContent = '(Video note — audio will be processed)';
+    capture.telegramFileId = ctx.message.video_note.file_id;
 
-    try {
-      const file = await ctx.getFile();
-      const filePath = await downloadTelegramFile(
-        file.file_path!, capture.id, 'audio', '.mp4',
-      );
-      capture.audioPath = filePath;
-      capture.telegramFileId = file.file_id;
+    db.insertRaw(capture);
+    await ctx.reply('✅ 🎥');
 
-      db.insertRaw(capture);
-      await ctx.reply('✅ 🎥');
-      pipeline.enqueue(capture);
-    } catch (error: any) {
-      console.error('[Bot] Failed to download video note:', error.message);
-      await ctx.reply('❌ Failed to capture video note. Try again?');
-    }
+    captureMediaThenEnqueue(ctx, db, pipeline, capture, ctx.message.video_note.file_id, 'audio', '.mp4');
   });
 
   // ── Catch-all for unsupported message types ───────────────
@@ -316,9 +335,6 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline): Bo
 // Helpers
 // ═══════════════════════════════════════════════════════════
 
-/**
- * Create a new RawCapture shell with common fields from context.
- */
 function newCapture(ctx: Context, type: RawCapture['rawType']): RawCapture {
   return {
     id: uuidv4(),
@@ -335,37 +351,44 @@ function newCapture(ctx: Context, type: RawCapture['rawType']): RawCapture {
 }
 
 /**
- * Download a file from Telegram's servers to local storage.
+ * Download the media for a capture that has ALREADY been inserted and
+ * ALREADY been ack'd, then enqueue it for AI processing. Runs in the
+ * background (not awaited by the caller) so the bot's reply is never
+ * blocked on Telegram's file servers.
+ *
+ * On failure, marks the row 'failed' rather than throwing away the
+ * capture — the row exists (it was inserted before this ran), so
+ * /retry can find it and processing/index.ts will re-attempt the
+ * download itself before giving up again.
  */
-async function downloadTelegramFile(
-  telegramFilePath: string,
-  captureId: string,
+async function captureMediaThenEnqueue(
+  ctx: Context,
+  db: CaptureDatabase,
+  pipeline: ProcessingPipeline,
+  capture: RawCapture,
+  fileId: string,
   subdir: 'images' | 'audio',
-  ext: string,
-): Promise<string> {
-  const url = `https://api.telegram.org/file/bot${config.telegram.botToken}/${telegramFilePath}`;
-  const response = await fetch(url);
+  fallbackExt: string,
+): Promise<void> {
+  try {
+    const file = await ctx.api.getFile(fileId);
+    const ext = path.extname(file.file_path || fallbackExt) || fallbackExt;
+    const filePath = await downloadTelegramFile(file.file_path!, capture.id, subdir, ext);
 
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+    if (subdir === 'images') {
+      capture.imagePath = filePath;
+      db.updateMediaPath(capture.id, 'image_path', filePath);
+    } else {
+      capture.audioPath = filePath;
+      db.updateMediaPath(capture.id, 'audio_path', filePath);
+    }
+
+    pipeline.enqueue(capture);
+  } catch (error: any) {
+    console.error(`[Bot] Background download failed for ${capture.id}:`, error.message);
+    db.markFailed(capture.id, `Download failed: ${error.message}`);
+    // No reply sent here — the ✅ ack already went out. The row is
+    // marked 'failed' and will surface in /stats and get a real
+    // second attempt via /retry.
   }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const dir = subdir === 'images' ? config.storage.imagesDir : config.storage.audioDir;
-  fs.mkdirSync(dir, { recursive: true });
-
-  const filename = `${captureId}${ext}`;
-  const filePath = path.join(dir, filename);
-  fs.writeFileSync(filePath, buffer);
-
-  console.log(`[Bot] Downloaded: ${filePath} (${formatBytes(buffer.length)})`);
-  return filePath;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }

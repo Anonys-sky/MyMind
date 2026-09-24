@@ -24,8 +24,11 @@ export const config = {
   },
   groq: {
     apiKey: requireEnv('GROQ_API_KEY'),
-    textModel: 'openai/gpt-oss-120b',
-    visionModel: 'qwen/qwen3.8-27b',
+    // Text structuring — Groq's production general-purpose model:
+    textModel: 'llama-3.3-70b-versatile',
+    // Vision — must be a model that actually accepts image input.
+    // Llama 4 Scout is the cheap/fast default; swap to Maverick if needed:
+    visionModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
     whisperModel: 'whisper-large-v3-turbo',
   },
   storage: {
