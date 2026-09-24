@@ -70,6 +70,7 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, sea
       `/tag <id> tag1, tag2 — Fix a capture's tags\n` +
       `/stats — View your knowledge base statistics\n` +
       `/recent [category] — Show last 5 captures (optionally filter by category)\n` +
+      `/digest — Resurface forgotten captures (30+ days old)\n` +
       `/retry — Re-process any failed captures\n\n` +
       `Categories: idea, reference, task, quote, link, learning, other`,
       { parse_mode: 'Markdown' },
@@ -221,6 +222,35 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, sea
     } else {
       await ctx.reply(`🔄 Retrying ${count} failed/pending capture(s)...`);
     }
+  });
+
+  // ── /digest command — Phase 4 ─────────────────────────────
+  // "Forgotten but not gone" — resurfaces items untouched 30+ days
+  bot.command('digest', async (ctx) => {
+    const forgotten = db.getForgotten(5);
+    if (forgotten.length === 0) {
+      await ctx.reply('🧠 Nothing forgotten yet — all your captures are fresh!');
+      return;
+    }
+
+    const lines = forgotten.map((c) => {
+      const tags = c.tags ? JSON.parse(c.tags).join(', ') : '';
+      const date = new Date(c.created_at + 'Z').toLocaleDateString();
+      const shortId = c.id.substring(0, 8);
+      const daysSince = Math.floor(
+        (Date.now() - new Date(c.updated_at + 'Z').getTime()) / (1000 * 60 * 60 * 24),
+      );
+      return (
+        `\`${shortId}\` *${c.title || 'Untitled'}*\n` +
+        `   ${c.category || 'other'} • ${date} • _${daysSince}d ago_\n` +
+        `   ${tags}`
+      );
+    });
+
+    await ctx.reply(
+      `💭 *Forgotten but not gone*\n_Items you haven't touched in 30+ days:_\n\n${lines.join('\n\n')}`,
+      { parse_mode: 'Markdown' },
+    );
   });
 
   // ── Text messages ─────────────────────────────────────────

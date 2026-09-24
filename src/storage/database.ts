@@ -393,6 +393,21 @@ export class CaptureDatabase {
     `).all(days) as StoredCapture[];
   }
 
+  /**
+   * Phase 4: Get "forgotten" captures — items not updated in 30+ days.
+   * Used for the resurfacing digest to prevent this from becoming
+   * "Telegram Saved Messages 2.0"
+   */
+  getForgotten(limit: number = 5): StoredCapture[] {
+    return this.db.prepare(`
+      SELECT * FROM captures
+      WHERE status = 'completed'
+      AND updated_at <= datetime('now', '-30 days')
+      ORDER BY RANDOM()
+      LIMIT ?
+    `).all(limit) as StoredCapture[];
+  }
+
   close(): void {
     this.db.close();
     console.log('[Database] Closed');
