@@ -69,8 +69,9 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, sea
       `/search <query> — Find anything you've saved\n` +
       `/tag <id> tag1, tag2 — Fix a capture's tags\n` +
       `/stats — View your knowledge base statistics\n` +
-      `/recent — Show last 5 captures\n` +
-      `/retry — Re-process any failed captures`,
+      `/recent [category] — Show last 5 captures (optionally filter by category)\n` +
+      `/retry — Re-process any failed captures\n\n` +
+      `Categories: idea, reference, task, quote, link, learning, other`,
       { parse_mode: 'Markdown' },
     );
   });
@@ -111,11 +112,23 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, sea
   });
 
   // ── /recent command ───────────────────────────────────────
-  // CHANGED: now shows the short id, since /tag needs it.
+  // Shows short id for /tag. Accepts optional category filter:
+  // /recent        → last 5 of any category
+  // /recent learning → last 5 in "learning" category
   bot.command('recent', async (ctx) => {
-    const recent = db.getRecent(5);
+    const categoryFilter = ctx.match?.trim().toLowerCase() || null;
+    const VALID_CATS = ['idea', 'reference', 'task', 'quote', 'link', 'learning', 'other'];
+
+    let recent;
+    if (categoryFilter && VALID_CATS.includes(categoryFilter)) {
+      recent = db.getByCategory(categoryFilter, 5);
+    } else {
+      recent = db.getRecent(5);
+    }
+
     if (recent.length === 0) {
-      await ctx.reply('No captures yet. Send me something!');
+      const suffix = categoryFilter ? ` in "${categoryFilter}"` : '';
+      await ctx.reply(`No captures${suffix} yet. Send me something!`);
       return;
     }
 
@@ -126,8 +139,9 @@ export function createBot(db: CaptureDatabase, pipeline: ProcessingPipeline, sea
       return `\`${shortId}\` *${c.title || 'Untitled'}*\n   ${c.category || 'other'} • ${date}\n   ${tags}`;
     });
 
+    const header = categoryFilter ? `📋 *Recent — ${categoryFilter}*` : `📋 *Recent Captures*`;
     await ctx.reply(
-      `📋 *Recent Captures*\n\n${lines.join('\n\n')}`,
+      `${header}\n\n${lines.join('\n\n')}`,
       { parse_mode: 'Markdown' },
     );
   });
